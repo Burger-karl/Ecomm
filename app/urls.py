@@ -20,7 +20,7 @@ urlpatterns = [
 
     path('add-to-cart/', views.add_to_cart, name='add-to-cart'),
     path('cart/', views.show_cart, name='showcart'),
-    path('checkout/', views.checkout.as_view(), name='checkout'),
+    path('checkout/', views.Checkout.as_view(), name='checkout'),
     path('orders/', views.orders, name='orders'),
     
     path('search/', views.search, name='search'),
@@ -42,6 +42,10 @@ urlpatterns = [
     path('password-reset/done/', auth_view.PasswordResetDoneView.as_view(template_name='app/password_reset_done.html'), name='password_reset_done'),
     path('password-reset-confirm/<uidb64>/<token>/', auth_view.PasswordResetConfirmView.as_view(template_name='app/password_reset_confirm.html', form_class=MySetPasswordForm), name='password_reset_confirm'),    
     path('password-reset-complete/', auth_view.PasswordResetCompleteView.as_view(template_name='app/password_reset_complete.html'), name='password_reset_complete'),
+
+    # payment
+    path('payment/<int:order_id>/', views.payment_view, name='payment'),
+    path('verify-payment/<str:ref>/', views.verify_payment_view, name='verify_payment'),
 
 ]+static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
 

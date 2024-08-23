@@ -1,7 +1,13 @@
 from django.db import models
+from django.utils import timezone
 from django.contrib.auth.models import User
+from paystackease import PayStackBase
 
 # Create your models here.
+
+# Instantiate PayStackBase
+paystack_sync = PayStackBase()
+
 
 STATE_CHOICES = (
     ('Abia','Abia'),
@@ -80,37 +86,55 @@ class Cart(models.Model):
         return self.quantity * self.product.discounted_price
 
 
-STATUS_CHOICES = (
-    ('Accepted','Accepted'),
-    ('Packed','Packed'),
-    ('On The Way','On The Way'),
-    ('Delivered','Delivered'),
-    ('Cancel','Cancel'),
-    ('Pending','Pending'),
-)
-
-
-class Payment(models.Model):
-    user = models.ForeignKey(User,on_delete=models.CASCADE)
-    amount = models.FloatField()
-    razorpay_order_id = models.CharField(max_length=100,blank=True,null=True)
-    razorpay_payment_status = models.CharField(max_length=100,blank=True,null=True)
-    razorpay_payment_id = models.CharField(max_length=100,blank=True,null=True)
-    paid = models.BooleanField(default=False)
-
-
 class OrderPlaced(models.Model):
-    user = models.ForeignKey(User,on_delete=models.CASCADE)
-    customer = models.ForeignKey(Customer,on_delete=models.CASCADE)
-    product = models.ForeignKey(Product,on_delete=models.CASCADE)
+    STATUS_CHOICES = (
+        ('Pending', 'Pending'),
+        ('Completed', 'Completed'),
+        ('Cancelled', 'Cancelled'),
+    )
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    customer = models.ForeignKey('Customer', on_delete=models.CASCADE)
+    product = models.ForeignKey('Product', on_delete=models.CASCADE)
     quantity = models.PositiveIntegerField(default=1)
     ordered_date = models.DateTimeField(auto_now_add=True)
-    status = models.CharField(max_length=50,choices=STATUS_CHOICES, default='Pending')
-    payment = models.ForeignKey(Payment,on_delete=models.CASCADE,default='')
+    status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='Pending')
+    payment = models.ForeignKey('Payment', on_delete=models.CASCADE, null=True, blank=True)
+    order_code = models.CharField(max_length=255, unique=True, blank=True, null=True)
+    payment_completed = models.BooleanField(default=False)
+    total_amount = models.PositiveIntegerField(default=0)
+
     @property
     def total_cost(self):
         return self.quantity * self.product.discounted_price
 
+    def save(self, *args, **kwargs):
+        if not self.order_code and self.payment and self.payment.verified:
+            self.order_code = f"ORD-{self.payment.ref}"
+        super().save(*args, **kwargs)
+
+
+class Payment(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    order = models.ForeignKey(OrderPlaced, on_delete=models.CASCADE, null=True, blank=True, related_name='payments')
+    amount = models.PositiveIntegerField()
+    ref = models.CharField(max_length=255, null=True, blank=True, unique=True)
+    email = models.EmailField(default='')
+    verified = models.BooleanField(default=False)
+    date_created = models.DateTimeField(default=timezone.now)
+
+    def __str__(self):
+        return f"{self.user.username} - Payment {self.id}"
+
+    def save(self, *args, **kwargs):
+        if not self.ref:
+            self.ref = paystack_sync.utils.generate_reference()
+        super().save(*args, **kwargs)
+
+    def verify_payment(self):
+        status, result = paystack_sync.transactions.verify(self.ref)
+        if status and result['status']:
+            self.verified = True
+            self.save()
 
 class Wishlist(models.Model):
     user = models.ForeignKey(User,on_delete=models.CASCADE)

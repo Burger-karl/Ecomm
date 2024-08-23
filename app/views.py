@@ -1,15 +1,21 @@
 from django.db.models import Count
-from django.shortcuts import render, redirect
+from django.shortcuts import render, redirect, get_object_or_404
 from django.http import JsonResponse
+from django.urls import reverse
 from django.views import View
-from .models import Cart, Customer, OrderPlaced, Product, Wishlist
+from .models import Cart, Customer, OrderPlaced, Product, Wishlist, Payment
 from .forms import CustomerRegistrationForm, CustomerProfileForm
 from django.contrib import messages
 from django.db.models import Q
 from django.contrib.auth.decorators import login_required
 from django.utils.decorators import method_decorator
+import uuid
+from .paystack_client import PaystackClient
 
 # Create your views here.
+
+paystack_client = PaystackClient()
+
 @login_required
 def home(request):
     totalitem = 0
@@ -203,30 +209,6 @@ def show_wishlist(request):
     return render(request, 'app/wishlist.html',locals())
 
 
-@method_decorator(login_required,name='dispatch')
-class checkout(View):
-    def get(self,request):
-        user=request.user
-        add=Customer.objects.filter(user=user)
-        cart_items=Cart.objects.filter(user=user)
-        famount = 0
-        for p in cart_items:
-            value = p.quantity * p.product.discounted_price
-            famount = famount + value
-        totalamount = famount + 40
-        return render(request, 'app/checkout.html', locals())
-
-
-@login_required
-def orders(request):
-    order_placed = OrderPlaced.objects.filter(user=request.user)
-    totalitem = 0
-    wishitem = 0
-    if request.user.is_authenticated:
-        totalitem = len(Cart.objects.filter(user=request.user))
-        wishitem = len(Wishlist.objects.filter(user=request.user))
-    return render(request, 'app/orders.html', locals())
-
 
 def plus_cart(request):
     if request.method == 'GET':
@@ -306,7 +288,7 @@ def minus_wishlist(request):
         prod_id = request.GET['prod_id']
         product = Product.objects.get(id=prod_id)
         user = request.user
-        Wishlist(user=user,product=product).delete()
+        Wishlist.objects.filter(user=user,product=product).delete()
         data={
             'message': 'Wishlist Removed Successfully',
         }
@@ -323,3 +305,133 @@ def search(request):
         wishitem = len(Wishlist.objects.filter(user=request.user))
     product = Product.objects.filter(Q(title__icontains=query))
     return render(request, 'app/search.html', locals())    
+
+
+
+@method_decorator(login_required, name='dispatch')
+class Checkout(View):
+    def get(self, request):
+        user = request.user
+        add = Customer.objects.filter(user=user)
+        cart_items = Cart.objects.filter(user=user)
+        famount = 0
+        for p in cart_items:
+            value = p.quantity * p.product.discounted_price
+            famount += value
+        totalamount = famount + 40  # Add shipping cost
+
+        context = {
+            'add': add,
+            'cart_items': cart_items,
+            'totalamount': totalamount,
+        }
+
+        return render(request, 'app/checkout.html', context)
+    
+    def post(self, request):
+        user = request.user
+        cart_items = Cart.objects.filter(user=user)
+        customer_id = request.POST.get('custid')
+        customer = get_object_or_404(Customer, id=customer_id)
+
+        if not cart_items.exists():
+            messages.error(request, 'No items in cart to place an order.')
+            return redirect('checkout')  # Redirect back if no items in cart
+
+        total_amount = sum(item.quantity * item.product.discounted_price for item in cart_items) + 40  # Including shipping
+        order = OrderPlaced.objects.create(
+            user=user,
+            customer=customer,
+            product=cart_items[0].product,  # Assuming one product for simplicity
+            quantity=cart_items[0].quantity,
+            status='Pending',
+            total_amount=total_amount
+        )
+
+        # Clear the cart after creating the order
+        cart_items.delete()
+
+        # Initiate payment process
+        amount = int(order.total_amount * 100)  # Paystack expects amount in kobo
+        email = user.email
+        order_code = str(uuid.uuid4())
+
+        order.order_code = order_code
+        order.save()
+
+        callback_url = request.build_absolute_uri(reverse('verify_payment', kwargs={'ref': order_code}))
+
+        response = paystack_client.initialize_transaction(email, amount, order_code, callback_url)
+
+        if response['status']:
+            return redirect(response['data']['authorization_url'])
+        else:
+            order.order_code = None
+            order.save()
+            messages.error(request, 'Payment initialization failed.')
+            return redirect('checkout')
+        
+
+@login_required
+def orders(request):
+    user = request.user
+    order_placed = OrderPlaced.objects.filter(user=user)
+    totalitem = len(Cart.objects.filter(user=user))
+    wishitem = len(Wishlist.objects.filter(user=user))
+
+    return render(request, 'app/orders.html', {'order_placed': order_placed, 'totalitem': totalitem, 'wishitem': wishitem})
+
+
+@login_required
+def payment_view(request, order_id):
+    order = get_object_or_404(OrderPlaced, id=order_id)
+    user = request.user
+
+    if order.payment_completed:
+        messages.error(request, 'Payment already completed for this order.')
+        return redirect('orders')
+
+    amount = int(order.total_amount * 100)  # Paystack expects amount in kobo
+    email = user.email
+    order_code = str(uuid.uuid4())
+
+    order.order_code = order_code
+    order.save()
+
+    callback_url = request.build_absolute_uri(reverse('verify_payment', kwargs={'ref': order_code}))
+
+    response = paystack_client.initialize_transaction(email, amount, order_code, callback_url)
+
+    if response['status']:
+        return redirect(response['data']['authorization_url'])
+    else:
+        order.order_code = None
+        order.save()
+        messages.error(request, 'Payment initialization failed.')
+        return redirect('orders')
+
+
+@login_required
+def verify_payment_view(request, ref):
+    response = paystack_client.verify_transaction(ref)
+
+    if response['status'] and response['data']['status'] == 'success':
+        order = get_object_or_404(OrderPlaced, order_code=ref)
+        order.payment_completed = True
+        order.status = 'Completed'  # Update order status
+        order.save()
+
+        Payment.objects.create(
+            user=request.user,
+            order=order,
+            amount=order.total_amount,
+            ref=ref,
+            email=request.user.email,
+            verified=True
+        )
+
+        messages.success(request, 'Payment successful')
+        return redirect('orders')
+    else:
+        messages.error(request, 'Payment verification failed.')
+        return redirect('orders')
