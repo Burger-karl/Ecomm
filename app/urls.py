@@ -49,6 +49,6 @@ urlpatterns = [
 
 ]+static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
 
-admin.site.site_header = "Neel Dairy"
-admin.site.site_title = "Neel Dairy"
-admin.site.site_index_title = "Welcome to Neel Dairy Store"
+admin.site.site_header = "Footy Store"
+admin.site.site_title = "Footy Store"
+admin.site.site_index_title = "Welcome to Footy Store"

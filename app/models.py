@@ -39,14 +39,13 @@ STATE_CHOICES = (
 
 
 CATEGORY_CHOICES=(
-    ('CR','Curd'),
-    ('ML','Milk'),
-    ('LS','Lassi'),
-    ('MS','Milkshake'),
-    ('PN','Paneer'),
-    ('GH','Ghee'),
-    ('CZ','Cheese'),
-    ('IC','Ice-Creams'),
+    ('EL','Electronics'),
+    ('PH','Phone'),
+    ('LP','Laptop'),
+    ('FE','FemaleWear'),
+    ('MW','MaleWear'),
+    ('FW','FootWear'),
+    ('AC','Accessory'),
 )
 
 class Product(models.Model):
